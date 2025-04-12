@@ -394,39 +394,87 @@ void handle_downloadtar(int sock) {
  * Handles permission errors gracefully
  */
 void handle_listing(int sock) {
-    printf("Request received from server S1 to list .pdf files.\n");
+    printf("Request received from server S1 to list .txt files.\n");
 
-    char command[1024];
-    snprintf(command, sizeof(command), "find %s/S3 -type f -name \"*.txt\"", getenv("HOME"));
-
-    FILE *fp = popen(command, "r");
-    if (!fp) {
-        perror("Failed to run find command");
+    // Step 1: Receive path length and path
+    int path_len = 0;
+    if (recv(sock, &path_len, sizeof(int), 0) <= 0 || path_len <= 0 || path_len >= 1024) {
+        perror("Failed to receive path length or invalid length");
         long status = 0;
         send(sock, &status, sizeof(long), 0);
         return;
     }
 
-    char line[1024];
-    char *files[512];
+    char pathname[1024] = {0};
+    if (recv(sock, pathname, path_len, 0) <= 0) {
+        perror("Failed to receive pathname");
+        long status = 0;
+        send(sock, &status, sizeof(long), 0);
+        return;
+    }
+    pathname[path_len] = '\0';
+    printf("Received pathname: %s\n", pathname);
+
+    // Step 2: Convert ~S3/... to actual home directory path
+    const char *home = getenv("HOME");
+    if (!home) {
+        perror("HOME not set");
+        long status = 0;
+        send(sock, &status, sizeof(long), 0);
+        return;
+    }
+
+    if (strncmp(pathname, "~S3", 3) != 0) {
+        fprintf(stderr, "Invalid path prefix\n");
+        long status = 0;
+        send(sock, &status, sizeof(long), 0);
+        return;
+    }
+
+    // Skip "~S3" and add the relative path after it
+    char full_path[1024];
+    snprintf(full_path, sizeof(full_path), "%s/S3%s", home, pathname + 3);
+    printf("Searching in directory: %s\n", full_path);
+
+    // Step 3: Run `find` command to list .pdf files
+    char command[1024];
+    snprintf(command, sizeof(command), "find %s -maxdepth 1 -type f -name \"*.txt\"", full_path);
+    printf("Executing: %s\n", command);
+
+    FILE *fp = popen(command, "r");
+    if (!fp) {
+        perror("Failed to run find");
+        long status = 0;
+        send(sock, &status, sizeof(long), 0);
+        return;
+    }
+
+    char **files = NULL;
     int count = 0;
+    char line[1024];
 
     while (fgets(line, sizeof(line), fp)) {
         char *newline = strchr(line, '\n');
         if (newline) *newline = '\0';
 
-        // Extract filename only
         char *slash = strrchr(line, '/');
-        if (slash && count < 512) {
+        if (slash) {
+            files = realloc(files, (count + 1) * sizeof(char *));
             files[count++] = strdup(slash + 1);
         }
     }
     pclose(fp);
 
-    long status = 1;
+    // Step 4: Send results back to S1
+    long status = (count > 0) ? 1 : 0;
     send(sock, &status, sizeof(long), 0);
-    send(sock, &count, sizeof(int), 0);
 
+    if (status == 0) {
+        printf("No .txt files found.\n");
+        return;
+    }
+
+    send(sock, &count, sizeof(int), 0);
     for (int i = 0; i < count; i++) {
         int len = strlen(files[i]);
         send(sock, &len, sizeof(int), 0);
@@ -435,8 +483,10 @@ void handle_listing(int sock) {
         free(files[i]);
     }
 
+    free(files);
     printf("Completed sending list to S1.\n");
 }
+
 
 int main() {
     int server_fd, new_socket;

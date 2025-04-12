@@ -838,10 +838,13 @@ int request_files_from_server(const char *ip, int port, const char *pathname, co
         return -1;
     }
 
-    // Send list command to the server
-    char command[1024];
-    snprintf(command, sizeof(command), "L %s", pathname);
-    send(sock, command, strlen(command), 0);
+    // send(sock, command, strlen(command), 0);
+    char command = 'L';
+    send(sock, &command, 1, 0);
+
+    int path_len = strlen(pathname);
+    send(sock, &path_len, sizeof(int), 0);
+    send(sock, pathname, path_len, 0);
 
     // Receive status
     long status;
@@ -878,6 +881,22 @@ int request_files_from_server(const char *ip, int port, const char *pathname, co
     return 0;
 }
 
+// Utility function to replace occurrences of a substring in a string
+char* str_replace(char *str, const char *old, const char *new) {
+    static char buffer[4096];
+    char *p;
+
+    if (!(p = strstr(str, old))) {
+        return str;
+    }
+
+    strncpy(buffer, str, p - str); // Copy the part before 'old'
+    buffer[p - str] = '\0';
+
+    sprintf(buffer + (p - str), "%s%s", new, p + strlen(old)); // Append new part
+
+    return buffer;
+}
 
 /**
  * @brief Processes directory listing requests
@@ -891,7 +910,7 @@ int request_files_from_server(const char *ip, int port, const char *pathname, co
  * Handles permission errors and invalid paths
  */
 void handle_pathname_request(int client_sock, const char *pathname) {
-     // Validate input
+    // Validate input
     if (!pathname || strlen(pathname) == 0) {
         send(client_sock, "EEmpty pathname", 15, 0);
         return;
@@ -909,24 +928,32 @@ void handle_pathname_request(int client_sock, const char *pathname) {
         return;
     }
 
-    //Helper macro for collecting files from a directory
+    // Helper macro for collecting files from a directory
     #define COLLECT_FILES(SERVER, EXT) \
         snprintf(base_path, sizeof(base_path), "%s/" SERVER "%s", home_dir, pathname + 3); \
         get_files_from_dir(base_path, EXT, &files, &count);
-
-    // // Collect files from each server directory based on extension
-    // COLLECT_FILES("S1", ".c");
-    // COLLECT_FILES("S2", ".pdf");
-    // COLLECT_FILES("S3", ".txt");
-    // COLLECT_FILES("S4", ".zip");
 
     // Get local .c files from S1 directory
     COLLECT_FILES("S1", ".c");
 
     // Request file lists from remote servers
-    request_files_from_server("127.0.0.1", PORT_S2, pathname, ".pdf", &files, &count); // S2
-    request_files_from_server("127.0.0.1", PORT_S3, pathname, ".txt", &files, &count); // S3
-    request_files_from_server("127.0.0.1", PORT_S4, pathname, ".zip", &files, &count); // S4
+    // Modify the path by replacing S1 with the respective server's directory
+    char new_path[1024];
+
+    // For S2 (.pdf files)
+    snprintf(new_path, sizeof(new_path), "%s", pathname);
+    char *path_s2 = str_replace(new_path, "S1", "S2");
+    request_files_from_server("127.0.0.1", PORT_S2, path_s2, ".pdf", &files, &count); 
+
+    // For S3 (.txt files)
+    snprintf(new_path, sizeof(new_path), "%s", pathname);
+    char *path_s3 = str_replace(new_path, "S1", "S3");
+    request_files_from_server("127.0.0.1", PORT_S3, path_s3, ".txt", &files, &count); 
+
+    // For S4 (.zip files)
+    snprintf(new_path, sizeof(new_path), "%s", pathname);
+    char *path_s4 = str_replace(new_path, "S1", "S4");
+    request_files_from_server("127.0.0.1", PORT_S4, path_s4, ".zip", &files, &count);
 
     // Sort files
     qsort(files, count, sizeof(FileEntry), compare_files);
@@ -955,6 +982,7 @@ void handle_pathname_request(int client_sock, const char *pathname) {
 
     printf("Completed sending file list.\n");
 }
+
 
 /**
  * @brief Handles a client connection in a dedicated process
