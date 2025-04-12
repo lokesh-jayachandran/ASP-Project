@@ -75,8 +75,53 @@
  * Handles server responses and errors
  */
 void upload_file(int sock, const char *filename, const char *dest_path) {
-    // Upload code
-    // uploadf filename destination_path
+
+    // Send command to server S1
+    char command[BUFFER_SIZE];
+    snprintf(command, BUFFER_SIZE, "uploadf %s %s", filename, dest_path);
+    send(sock, command, strlen(command), 0);
+    printf("Command send to S1: %s\n", command);
+
+    // Open the file
+    FILE *fp = fopen(filename, "rb");
+    if (!fp) {
+        perror("Error opening file");
+        return;
+    }
+
+    // Get file size
+    fseek(fp, 0, SEEK_END);
+    long filesize = ftell(fp);
+    rewind(fp);
+
+    // Read the file into memory
+    char *filedata = malloc(filesize);
+    if (fread(filedata, 1, filesize, fp) != filesize) {
+        perror("Error reading file");
+        fclose(fp);
+        free(filedata);
+        return;
+    }
+    fclose(fp);
+
+    // Send file size
+    write(sock, &filesize, sizeof(long));
+
+    // Send file data in chunks
+    long total_sent = 0;
+    while (total_sent < filesize) {
+        int chunk = write(sock, filedata + total_sent, filesize - total_sent);
+        printf("File content sent to server : %s\n", filedata);
+        if (chunk <= 0) break;
+        total_sent += chunk;
+    }
+
+    // Receive the server's response
+    char response[1024];
+    read(sock, response, sizeof(response));
+    printf("Server response: %s\n", response);
+
+    free(filedata);
 }
 
 /**
@@ -90,7 +135,7 @@ void upload_file(int sock, const char *filename, const char *dest_path) {
  * Preserves original filename
  */
 void download_file(int sock, const char *filepath) {
-    // Send command
+    // Send command to server S1
     char command[BUFFER_SIZE];
     snprintf(command, BUFFER_SIZE, "downlf %s", filepath);
     send(sock, command, strlen(command), 0);
@@ -177,7 +222,7 @@ void download_file(int sock, const char *filepath) {
  * Supports deletion of all file types
  */
 void remove_file(int sock, const char *filepath) {
-    // Send command to server
+    // Send command to server S1
     char command[BUFFER_SIZE];
     snprintf(command, BUFFER_SIZE, "removef %s", filepath);
     printf("Bytes send: %s\n", command);
@@ -303,12 +348,10 @@ void downloadtar_file(int sock, const char *filetype) {
  * @param path Server directory path to list (~S1/...)
  *
  * Shows hierarchical directory structure
- * Color-codes different file types
- * Paginates long listings
  * Handles network errors gracefully
  */
-void list_file(int sock, const char *filepath) {
-    // Prepare and send the command to S1
+void list_file(int sock, const char *filepath){
+     // Prepare and send the command to S1
     char command[BUFFER_SIZE];
     snprintf(command, BUFFER_SIZE, "dispfnames %s", filepath);
     send(sock, command, strlen(command), 0);
@@ -355,7 +398,6 @@ void list_file(int sock, const char *filepath) {
 
     printf("File list retrieval complete.\n");
 }
-
 
 int main() {
     int sock = 0;
@@ -412,6 +454,34 @@ int main() {
                 printf("Invalid command syntax. Usage: uploadf filename ~S1/path/to/file\n");
                 continue;
             }
+
+            //char filename[256], dest[512];
+
+            /*if (sscanf(command, "uploadf %s %s", filename, dest) != 2) {
+                printf("Invalid syntax. Usage: uploadf <filename> <destination>\n");
+                continue;
+            }*/
+
+            // Check file type
+            char *ext = strrchr(filename, '.');
+            if (!ext || (strcmp(ext, ".c") != 0 && strcmp(ext, ".pdf") != 0 &&
+                         strcmp(ext, ".txt") != 0 && strcmp(ext, ".zip") != 0)) {
+                printf("Unsupported file type. Allowed: .c, .pdf, .txt, .zip\n");
+                continue;
+            }
+
+            // Check if file exists
+            if (access(filename, F_OK) != 0) {
+                printf("File does not exist in the current directory.\n");
+                continue;
+            }
+
+            // Check destination prefix
+            if (strncmp(dest_path, "~S1", 3) != 0) {
+                printf("Destination must start with ~S1\n");
+                continue;
+            }
+
             upload_file(sock, filename, dest_path);
         } else if (strcmp(command, "downlf") == 0) {
             // Get the second token (i.e; filepath)
@@ -420,6 +490,23 @@ int main() {
                 printf("Invalid command syntax. Usage: downlf ~S1/path/to/file\n");
                 continue;
             }
+            // Get last '/'
+            const char *filename = strrchr(filepath, '/');
+            if (!filename){
+                printf("Invalid command syntax. Usage: downlf ~S1/path/to/file\n");
+                continue;
+            }
+            else
+                filename++; // Move past '/'
+
+            // Check file type
+            char *ext = strrchr(filename, '.');
+            if (!ext || (strcmp(ext, ".c") != 0 && strcmp(ext, ".pdf") != 0 &&
+                         strcmp(ext, ".txt") != 0 && strcmp(ext, ".zip") != 0)) {
+                printf("Unsupported file type. Allowed: .c, .pdf, .txt, .zip\n");
+                continue;
+            }
+
             download_file(sock, filepath);
         } else if (strcmp(command, "removef") == 0) {
             // Get the second token (i.e; filepath)
@@ -428,13 +515,38 @@ int main() {
                 printf("Invalid command syntax. Usage: removef ~S1/path/to/file\n");
                 continue;
             }
+
+            // Get last '/'
+            const char *filename = strrchr(filepath, '/');
+            if (!filename){
+                printf("Invalid command syntax. Usage: removef ~S1/path/to/file\n");
+                continue;
+            }
+            else
+                filename++; // Move past '/'
+
+            // Check file type
+            char *ext = strrchr(filename, '.');
+            if (!ext || (strcmp(ext, ".c") != 0 && strcmp(ext, ".pdf") != 0 &&
+                         strcmp(ext, ".txt") != 0)) {
+                printf("Unsupported file type. Allowed: .c, .pdf, .txt\n");
+                continue;
+            }
+
             remove_file(sock, filepath);
         } else if (strcmp(command, "downltar") == 0) {
             // Get the second token (i.e; filetype)
             // Supported file types: .c, .pdf, .txt 
             char *filetype = strtok(NULL, " ");
             if (!filetype) {
-                printf("Invalid command syntax. Usage: downltar <c|pdf|txt>\n");
+                printf("Invalid command syntax. Usage: downltar <.c|.pdf|.txt>\n");
+                continue;
+            }
+
+            // Check file type
+            if ((strcmp(filetype, ".c") != 0 && strcmp(filetype, ".pdf") != 0 &&
+                         strcmp(filetype, ".txt") != 0)) {
+                printf("Unsupported file type. Allowed: .c, .pdf, .txt\n");
                 continue;
             }
             downloadtar_file(sock, filetype);
@@ -448,6 +560,7 @@ int main() {
             list_file(sock, filepath);
         } else {
             printf("Unknown command\n");
+            printf("Supported commands are uploadf, downlf, removef, downltar, dispfnames\n");
         }
     }
 

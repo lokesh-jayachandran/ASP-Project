@@ -29,6 +29,7 @@
 #include <fcntl.h>
 #include <dirent.h>
 #include <arpa/inet.h>
+#include <libgen.h>
 #include <asm-generic/socket.h>
 
 #define PORT_S4 6057
@@ -60,8 +61,55 @@ void create_directory(const char *path) {
  * Uses atomic move for completed transfers
  */
 void handle_upload(int sock) {
-    // upload code
-    // uploadf filename destination_path
+    printf("Request receive from server S1 to upload a zip file.\n");
+
+    int path_len;
+    read(sock, &path_len, sizeof(int));
+    printf("Path Length is: %d\n", path_len);
+
+    char rel_path[1024];
+    read(sock, rel_path, path_len);
+    rel_path[path_len] = '\0';
+    printf("Relative path is: %s\n", rel_path);
+
+    // Receive file size
+    long filesize;
+    read(sock, &filesize, sizeof(long));
+    printf("Size of file received: %d\n", filesize);
+
+    // Receive file data
+    char *filedata = malloc(filesize);
+    long received = 0;
+    while (received < filesize) {
+        int chunk = read(sock, filedata + received, filesize - received);
+        printf("File content sent to S1 : %s\n", filedata);
+        if (chunk <= 0) break;
+        received += chunk;
+    }
+
+    // Create full path for S4
+    char fullpath[1024];
+    snprintf(fullpath, sizeof(fullpath), "%s/S4%s", getenv("HOME"), rel_path);
+    printf("Full path is: %s\n", fullpath);
+
+    // Create directory tree ~/S2/..
+    char mkdir_cmd[1024];
+    snprintf(mkdir_cmd, sizeof(mkdir_cmd), "mkdir -p %s", dirname(strdup(fullpath)));
+    system(mkdir_cmd);
+    printf("mkdir_cmd is: %s\n", mkdir_cmd);
+
+    // Create file and write data into it
+    FILE *fp = fopen(fullpath, "wb");
+    if (fp) {
+        fwrite(filedata, 1, filesize, fp);
+        fclose(fp);
+    } else {
+        perror("S4 write failed");
+    }
+
+    printf("File uploaded successfully\n");
+
+    free(filedata);
 }
 
 /**
@@ -130,6 +178,62 @@ void handle_download(int sock) {
         file_size -= bytes_read;
     }
     fclose(file);       // Close the file
+    printf("File sent successfully to S1: %s\n", file);
+}
+
+/**
+ * @brief Generates directory listings for S1
+ * @param sock Connection socket from main server
+ * @param path Directory path to scan
+ *
+ * Lists all files with server's managed extension
+ * Recursively scans subdirectories when requested
+ * Returns sorted list of filenames with extensions
+ * Handles permission errors gracefully
+ */
+void handle_listing(int sock) {
+    printf("Request received from server S1 to list .pdf files.\n");
+
+    char command[1024];
+    snprintf(command, sizeof(command), "find %s/S4 -type f -name \"*.zip\"", getenv("HOME"));
+
+    FILE *fp = popen(command, "r");
+    if (!fp) {
+        perror("Failed to run find command");
+        long status = 0;
+        send(sock, &status, sizeof(long), 0);
+        return;
+    }
+
+    char line[1024];
+    char *files[512];
+    int count = 0;
+
+    while (fgets(line, sizeof(line), fp)) {
+        char *newline = strchr(line, '\n');
+        if (newline) *newline = '\0';
+
+        // Extract filename only
+        char *slash = strrchr(line, '/');
+        if (slash && count < 512) {
+            files[count++] = strdup(slash + 1);
+        }
+    }
+    pclose(fp);
+
+    long status = 1;
+    send(sock, &status, sizeof(long), 0);
+    send(sock, &count, sizeof(int), 0);
+
+    for (int i = 0; i < count; i++) {
+        int len = strlen(files[i]);
+        send(sock, &len, sizeof(int), 0);
+        send(sock, files[i], len, 0);
+        printf("Sent file: %s\n", files[i]);
+        free(files[i]);
+    }
+
+    printf("Completed sending list to S1.\n");
 }
 
 int main() {
@@ -187,6 +291,9 @@ int main() {
                 break;
             case 'D': // Download
                 handle_download(new_socket);
+                break;
+            case 'L': // List
+                handle_listing(new_socket);
                 break;
             default:
                 printf("Unknown command type\n");
