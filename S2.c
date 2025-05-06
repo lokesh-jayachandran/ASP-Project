@@ -1,23 +1,44 @@
 /*
- * Distributed File System - PDF Storage Server (S2)
+ * S2.c - Secondary Server for PDF File Storage
  *
- * Responsibilities:
- * 1. Stores all PDF files in ~/S2/ directory
- * 2. Services file requests from S1:
+ * Description:
+ * ------------
+ * This server receives .pdf files from the main server (S1) and stores them
+ * under the local ~/S2 directory structure. It handles:
+ *   - Receiving and saving uploaded PDF files
+ *   - Responding to S1 for download and delete requests
+ *   - Creating TAR files of all .pdf files for downltar command
+ *   - Sending pdf file list to S1 for listing operation
+ *
+ * Key Behaviors:
+ * --------------
+ * - Listens for connections from S1 only.
+ * - Stores files in a local path mirroring the one sent by the client via S1.
+ * - Supports upload, download, remove, list and tar archive generation operations.
+ * - Maintains identical directory structure as S1
+ * - Services file requests from S1:
  *    - Upload (U)
  *    - Download (D)
  *    - Delete (R)
  *    - Download tar (T)
  *    - Directory listing (L)
  *
- * Protocol:
- * - Listens on TCP port 8089
- * - Expects paths in ~S1/ format, converts to ~/S2/
- * - Maintains identical directory structure as S1
+ * Usage:
+ * ------
+ * Compile: gcc S2.c -o S2
+ * Run:     ./S2
+ *
+ * Port: Default is 6072 (can be changed via macro)
  *
  * Security:
+ * ---------
  * - Validates all paths to prevent traversal attacks
  * - Rejects non-PDF file operations
+ * 
+ * Authors: Saima Khatoon and Lokesh Jayachandran
+ * Date: 09-04-2025
+ * Course: COMP-8567
+ * Institution: University of Windsor
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,23 +54,10 @@
 #include <libgen.h>
 #include <asm-generic/socket.h>
 
-#define PORT_S2 6055
+
+#define PORT_S2 6072
 #define BUFFER_SIZE 1024
 #define MAX_PATH_LEN 1024
-
-/**
- * @brief Creates directory structure recursively
- * @param path The full directory path to create
- *
- * Handles all intermediate directory creation
- * Uses mkdir -p system command
- * Validates path format
- */
-void create_directory(const char *path) {
-    char command[1024];
-    snprintf(command, sizeof(command), "mkdir -p %s", path);
-    system(command);
-}
 
 /**
  * @brief Handles file uploads from main server
@@ -59,10 +67,10 @@ void create_directory(const char *path) {
  * Creates parent directories as needed
  * Implements overwrite protection
  * Validates file extension matches server type
- * Uses atomic move for completed transfers
  */
 void handle_upload(int sock) {
-    printf("Request receive from server S1 to upload a pdf file.\n");
+    // Request receive from server S1
+    printf("======Processing upload of PDF file======*\n");
 
     int path_len;
     read(sock, &path_len, sizeof(int));
@@ -83,7 +91,7 @@ void handle_upload(int sock) {
     long received = 0;
     while (received < filesize) {
         int chunk = read(sock, filedata + received, filesize - received);
-        printf("File content sent to S1 : %s\n", filedata);
+        //printf("File content sent to S1 : %s\n", filedata);
         if (chunk <= 0) break;
         received += chunk;
     }
@@ -97,7 +105,7 @@ void handle_upload(int sock) {
     char mkdir_cmd[1024];
     snprintf(mkdir_cmd, sizeof(mkdir_cmd), "mkdir -p %s", dirname(strdup(fullpath)));
     system(mkdir_cmd);
-    printf("mkdir_cmd is: %s\n", mkdir_cmd);
+    printf("Command to create directory: %s\n", mkdir_cmd);
 
     // Create file and write data into it
     FILE *fp = fopen(fullpath, "wb");
@@ -105,11 +113,11 @@ void handle_upload(int sock) {
         fwrite(filedata, 1, filesize, fp);
         fclose(fp);
     } else {
-        perror("S2 write failed");
-        printf("S2 write failed");
+        perror("S2 write failed\n\n");
+        printf("S3 write failed\n\n");
     }
 
-    printf("File uploaded successfully\n");
+    printf("File uploaded successfully.\n\n");
 
     free(filedata);
 }
@@ -124,7 +132,8 @@ void handle_upload(int sock) {
  * Implements proper error reporting
  */
 void handle_download(int sock) {
-    printf("Request receive from server S1 to download a pdf file.\n");
+    // Request receive from server S1
+    printf("======Processing download of PDF file======\n");
 
     // Receive path length from S1
     int path_len;
@@ -181,21 +190,21 @@ void handle_download(int sock) {
     }
 
     fclose(file);       // Close the file
-    printf("File sent successfully to S1: %s\n", file);
+    printf("File sent successfully to S1.\n");
 }
 
 /**
  * @brief Processes file deletion requests from S1
- * @param sock Connection socket from main server
+ * @param sock The connection socket from S1
  *
  * Validates file path exists
- * Checks file permissions before deletion
- * Handles both files and empty directories
+ * Verify path starts with ~S1/
  * Returns success/error message to S1
  * Implements secure path validation
  */
 void handle_remove(int sock) {
-    printf("Request receive from server S1 to remove a pdf file.\n");
+    // Request receive from server S1
+    printf("======Processing remove of PDF file======\n");
 
     // Receive path from S1 to delete a file
     int path_len;
@@ -250,20 +259,20 @@ void handle_remove(int sock) {
     // Execute deletion
     if (remove(local_path) == 0) {
         send(sock, "SFile deleted successfully", 26, 0);
-        printf("SFile deleted successfully\n");
+        printf("SFile deleted successfully.\n\n");
     } else {
         // Provide specific error messages
         switch (errno) {
             case ENOENT:
-                printf("EFile not found\n");
+                printf("EFile not found\n\n");
                 send(sock, "EFile not found", 15, 0);
                 break;
             case EACCES:
-                printf("EPermission denied\n");
+                printf("EPermission denied\n\n");
                 send(sock, "EPermission denied", 18, 0);
                 break;
             default:
-                printf("EFile deletion failed\n");
+                printf("EFile deletion failed\n\n");
                 send(sock, "EFile deletion failed", 21, 0);
         }
     }
@@ -280,7 +289,8 @@ void handle_remove(int sock) {
  * Cleans up temporary files
  */
 void handle_downloadtar(int sock) {
-    printf("Request receive from server S1 to create tar file for pdf files.\n");
+    // Request receive from server S1
+    printf("======Processing creation of tar file======\n");
 
     // Receive filetype length and filetype
     int type_len;
@@ -303,6 +313,37 @@ void handle_downloadtar(int sock) {
         return;
     }
 
+     // First check if S2 directory exists
+    struct stat st;
+    char s2_dir[256];
+    snprintf(s2_dir, sizeof(s2_dir), "%s/S2", getenv("HOME"));
+    if (stat(s2_dir, &st) == -1 || !S_ISDIR(st.st_mode)) {
+        long error = -1;
+        send(sock, &error, sizeof(long), 0);
+        char *err_msg = "ES1 directory not found";
+        int msg_len = strlen(err_msg);
+        send(sock, &msg_len, sizeof(int), 0);
+        send(sock, err_msg, msg_len, 0);
+        printf("ES1 directory not found.\n");
+        return;
+    }
+
+    // Check if there are any .pdf files
+    char check_cmd[512];
+    snprintf(check_cmd, sizeof(check_cmd), 
+            "find %s -type f -name '*.pdf' | head -n 1 | grep -q .", s2_dir);
+    
+    if (system(check_cmd) != 0) {
+        long error = -1;
+        send(sock, &error, sizeof(long), 0);
+        char *err_msg = "ENo .pdf files found in S1 directory";
+        int msg_len = strlen(err_msg);
+        send(sock, &msg_len, sizeof(int), 0);
+        send(sock, err_msg, msg_len, 0);
+        printf("ENo .pdf files found in S1 directory.\n");
+        return;
+    }
+
     // Create a temporary directory for server files
     // Tar file will be created inside server_tmp directory
     char temp_dir[] = "server_temp";
@@ -315,7 +356,7 @@ void handle_downloadtar(int sock) {
 
     // Construct tar file name
     char tar_filename[256];     // pdffiles.tar for pdf tar file
-    snprintf(tar_filename, sizeof(tar_filename), "%sfiles.tar", filetype);
+    snprintf(tar_filename, sizeof(tar_filename), "%s.tar", filetype);
 
     // Create path for tar file (relative paths)
     char server_tar_path[512];
@@ -324,7 +365,7 @@ void handle_downloadtar(int sock) {
 
     // Create file list (relative paths)
     char list_path[512];
-    snprintf(list_path, sizeof(list_path), "%s/c_files.list", temp_dir);
+    snprintf(list_path, sizeof(list_path), "%s/pdf_files.list", temp_dir);
     printf("List path is: %s\n", list_path);
     
     // Construct command for tar file creation
@@ -359,6 +400,10 @@ void handle_downloadtar(int sock) {
     long tar_size = ftell(tar_file);
     fseek(tar_file, 0, SEEK_SET);
 
+    // Send status to S1 to proceed for sharing
+    long status = 1;
+    send(sock, &status, sizeof(long), 0);
+
     // Send tar file size to S1
     send(sock, &tar_size, sizeof(long), 0);
 
@@ -380,7 +425,7 @@ void handle_downloadtar(int sock) {
     remove(server_tar_path);
     rmdir(temp_dir);
 
-    printf("Tar file sent successfully to S1\n");
+    printf("Tar file sent successfully to S1.\n\n");
 }
 
 /**
@@ -394,7 +439,8 @@ void handle_downloadtar(int sock) {
  * Handles permission errors gracefully
  */
 void handle_listing(int sock) {
-    printf("Request received from server S1 to list .pdf files.\n");
+    // Request receive from server S1
+    printf("======Processing listing of pdf files======\n");
 
     // Step 1: Receive path length and path
     int path_len = 0;
@@ -470,7 +516,7 @@ void handle_listing(int sock) {
     send(sock, &status, sizeof(long), 0);
 
     if (status == 0) {
-        printf("No .pdf files found.\n");
+        printf("No .pdf files found.\n\n");
         return;
     }
 
@@ -484,13 +530,30 @@ void handle_listing(int sock) {
     }
 
     free(files);
-    printf("Completed sending list to S1.\n");
+    printf("Completed sending list to S1.\n\n");
 }
 
-
-
-
-
+/**
+ * @brief Main entry point for S2 server in W25 Distributed Filesystem
+ * 
+ * @return int Returns 0 on normal shutdown, EXIT_FAILURE on critical errors
+ * 
+ * @details Creates a TCP server on PORT_S2 that handles multiple file operations:
+ *          - 'U' Upload files to server storage
+ *          - 'D' Download files from server
+ *          - 'R' Remove files from server
+ *          - 'T' Create and send tar bundles
+ *          - 'L' List available files
+ * 
+ * @note The server runs indefinitely until manually terminated
+ * @warning Uses SO_REUSEADDR|SO_REUSEPORT to allow quick socket recycling
+ * 
+ * Server Workflow:
+ * 1. Creates listening socket on PORT_S2
+ * 2. Accepts incoming client connections
+ * 3. Processes commands based on received command type
+ * 4. Closes client connection after handling
+ */
 int main() {
     int server_fd, new_socket;
     struct sockaddr_in address;

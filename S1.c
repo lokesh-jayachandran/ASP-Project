@@ -1,19 +1,32 @@
 /*
- * Distributed File System - Main Server (S1)
- * 
- * Responsibilities:
- * 1. Accepts client connections and forks handler processes
- * 2. Routes files to appropriate storage servers:
- *    - .c files stored locally in ~/S1/
- *    - .pdf → S2, .txt → S3, .zip → S4
- * 3. Maintains transparency - clients only see ~S1/ paths
+ * S1.c - Main Server for Distributed File System 
  *
- * Protocol:
- * - Clients connect via TCP port 8085
+ * Description:
+ * ------------
+ * This program implements the main server (S1) in a distributed file system setup.
+ * It accepts connections from multiple clients and handles file operations like:
+ *   - Handling uploads, downloads, deletions, list generation and TAR creation requests of .c files locally
+ *   - Forwarding files  (.pdf, .txt, .zip) to secondary servers (S2, S3, S4) based on file type
+ * 
+ * Key Behaviors:
+ * --------------
+ * - S1 handles client connections via forked child processes.
+ * - Only .c files are stored locally; other types are transferred to:
+ *      .pdf → S2, .txt → S3, .zip → S4
+ * - Clients are unaware of S2/S3/S4 and interact only with S1.
+ * - S1 ensures proper routing, error checking, and communication between components.
+ * - Maintains transparency - clients only see ~S1/ paths
  * - Uses 'U'pload, 'D'ownload, 'R'emove , Download 'T'ar, Directory 'L'isting commands
- * - Path format: ~S1/[path]/filename.ext
+ *
+ * Usage:
+ * ------
+ * Compile: gcc S1.c -o S1
+ * Run:     ./S1
+ *
+ * Port: Default is 6071 (can be changed via macro)
  *
  * Client Command Received:
+ * ------------------------
  * 
  * - uploadf: Upload files to distributed storage
  * - downlf: Download files from server
@@ -21,28 +34,6 @@
  * - downltar: Download tar of file type
  * - dispfnames: List directory contents
  * 
- * Server-to-Server Command Protocol (S1 ↔ S2/S3/S4):
- * Single-character commands followed by path/data:
- * 
- * 'U' - Upload File
- *   1. S1 → Storage: 'U' + path_len + path + file_size + file_data
- *   2. Storage → S1: Success/Failure response
- * 
- * 'D' - Download File  
- *   1. S1 → Storage: 'D' + path_len + path
- *   2. Storage → S1: file_size + file_data OR error
- * 
- * 'R' - Remove File
- *   1. S1 → Storage: 'R' + path_len + path  
- *   2. Storage → S1: Success/Failure response
- * 
- * 'T' - Tar Files
- *   1. S1 → Storage: 'T' + filetype_len + filetype (.pdf/.txt)
- *   2. Storage → S1: tar_size + tar_data
- * 
- * 'L' - List Files
- *   1. S1 → Storage: 'L' + path_len + path
- *   2. Storage → S1: file_count + [filename1, filename2...]
  * 
  * Authors: Saima Khatoon and Lokesh Jayachandran
  * Date: 09-04-2025
@@ -66,28 +57,14 @@
 #include <libgen.h>
 #include <asm-generic/socket.h>
 
-#define PORT_S1 6054
-#define PORT_S2 6055
-#define PORT_S3 6056
-#define PORT_S4 6057
+
+#define PORT_S1 6071
+#define PORT_S2 6072
+#define PORT_S3 6073
+#define PORT_S4 6074
 #define BUFFER_SIZE 1024
 #define MAX_PATH_LEN 1024
 
-/**
- * @brief Creates directory structure recursively
- * @param path The full directory path to create
- *
- * Handles all intermediate directory creation
- * Uses mkdir -p system command
- * Validates path format
- */
-void create_directory(const char *path) {
-    char command[1024];
-    snprintf(command, sizeof(command), "mkdir -p %s", path);
-    system(command);
-}
-
-// Attempts to connect to the target server at 127.0.0.1:target_port
 /**
  * @brief Establishes connection to a target storage server
  * @param target_port Port number of the target server
@@ -123,7 +100,7 @@ int connect_to_target_server(int target_port, int client_sock) {
         long status = -1;
         send(client_sock, &status, sizeof(long), 0);
         // Close the socket and notify the client about the failure
-        const char *msg = "ECould not connect to server";
+        const char *msg = "EConnection is not reliable";
         int msg_len = strlen(msg);
         send(client_sock, &msg_len, sizeof(int), 0);
         send(client_sock, msg, msg_len, 0);
@@ -133,7 +110,21 @@ int connect_to_target_server(int target_port, int client_sock) {
     return server_sock;  // Success
 }
 
-// Function to send file to the server (S2, S3, or S4)
+/**
+ * @brief Sends a file to a target server via TCP connection
+ * 
+ * @param ip Target server IP address (S2/S3/S4)
+ * @param port Target server port number
+ * @param filedata File content buffer to send
+ * @param filesize Size of file data in bytes
+ * @param relative_dest_path Destination path on server (relative)
+ * @return int 1 on success, -1 on failure
+ * 
+ * @details Implements protocol:
+ * 'U' - Upload File
+ *   1. S1 → Storage: 'U' + path_len + path + file_size + file_data
+ *   2. Storage → S1: Success/Failure response
+ */
 int send_file_to_server(const char *ip, int port, const char *filedata, long filesize, const char *relative_dest_path) {
     int sock;
     struct sockaddr_in server;
@@ -175,7 +166,7 @@ int send_file_to_server(const char *ip, int port, const char *filedata, long fil
     long total_sent = 0;
     while (total_sent < filesize) {
         int chunk = write(sock, filedata + total_sent, filesize - total_sent);
-        printf("File content receive from target server and frorward to client : %s\n", filedata);
+        printf("File content sent to client : %s\n", filedata);
         if (chunk <= 0) break;
         total_sent += chunk;
     }
@@ -207,7 +198,7 @@ void handle_upload_request(int client_sock, const char *filename, const char *de
         long received = 0;
         while (received < size) {
             int chunk = read(client_sock, filedata + received, size - received);
-            printf("File content receive from client : %s\n", filedata);
+            //printf("File content receive from client : %s\n", filedata);
             if (chunk <= 0) break;
             received += chunk;
         }
@@ -222,7 +213,7 @@ void handle_upload_request(int client_sock, const char *filename, const char *de
 
         int result = 0;  // Variable to store the result status (success/failure)
 
-        printf("moddest is: %s\n", moddest);
+        //printf("moddest is: %s\n", moddest);
 
         // Determine where to send the file based on its extension
         if (ext && strcmp(ext, ".pdf") == 0) {
@@ -243,7 +234,7 @@ void handle_upload_request(int client_sock, const char *filename, const char *de
 
             snprintf(mkdir_cmd, sizeof(mkdir_cmd), "mkdir -p %s", dirname(strdup(fullpath)));
             system(mkdir_cmd);
-            printf("mkdir_cmd is: %s\n", mkdir_cmd);
+            printf("Command to create directory is: %s\n", mkdir_cmd);
 
             FILE *fp = fopen(fullpath, "wb");
             if (fp) {
@@ -286,19 +277,34 @@ void handle_upload_request(int client_sock, const char *filename, const char *de
  * Handles .c files locally, routes others to storage servers
  * Validates paths and file existence
  * Streams files with size prefix protocol
+ * 
+ * @details Implements protocol:
+ * 'D' - Download File  
+ *   1. S1 → Storage: 'D' + path_len + path
+ *   2. Storage → S1: file_size + file_data OR error
  */
 void handle_download_request(int client_sock, const char *filepath) {
 
     // Validate input
     if (!filepath || strlen(filepath) == 0) {
-        send(client_sock, "EEmpty file path", 16, 0);
+        long error = -1;
+        send(client_sock, &error, sizeof(long), 0);
+        char *err_msg = "EEmpty file path";
+        int msg_len = strlen(err_msg);
+        send(client_sock, &msg_len, sizeof(int), 0);
+        send(client_sock, err_msg, msg_len, 0);
         return;
     }
 
     // Extract file extension
     const char *ext = strrchr(filepath, '.');
     if (!ext) {
-        send(client_sock, "EInvalid file: no extension", 26, 0);
+        long error = -1;
+        send(client_sock, &error, sizeof(long), 0);
+        char *err_msg = "EInvalid file: no extension";
+        int msg_len = strlen(err_msg);
+        send(client_sock, &msg_len, sizeof(int), 0);
+        send(client_sock, err_msg, msg_len, 0);
         return;
     }
     ext++; // Move past the dot
@@ -312,7 +318,12 @@ void handle_download_request(int client_sock, const char *filepath) {
         char *home_dir = NULL;
         const char *s1_part = strstr(filepath, "S1/");
         if (!s1_part) {
-            send(client_sock, "EInvalid path format", 20, 0);
+            long error = -1;
+            send(client_sock, &error, sizeof(long), 0);
+            char *err_msg = "EInvalid path format";
+            int msg_len = strlen(err_msg);
+            send(client_sock, &msg_len, sizeof(int), 0);
+            send(client_sock, err_msg, msg_len, 0);
             return;
         }
 
@@ -325,7 +336,7 @@ void handle_download_request(int client_sock, const char *filepath) {
         // Open file in S1
         FILE *file = fopen(local_path, "rb");
         if (!file) {
-            printf("EFile not found\n");
+            //printf("EFile not found\n");
             // File not found: send a size of -1
             long error = -1;
             send(client_sock, &error, sizeof(long), 0);
@@ -359,7 +370,7 @@ void handle_download_request(int client_sock, const char *filepath) {
         }
 
         fclose(file);   // Close the file
-        printf("File sent successfully to client: %s\n", file);
+        printf("File sent successfully to client.\n");
         return;
     }
 
@@ -412,7 +423,7 @@ void handle_download_request(int client_sock, const char *filepath) {
     recv(server_sock, &status1, 1, 0);
 
     if (status1 == -1) {
-        printf("EFile not found\n");
+        //printf("EFile not found\n");
         int msg_len;
         recv(server_sock, &msg_len, sizeof(int), 0);
         char error_msg[BUFFER_SIZE];
@@ -447,6 +458,7 @@ void handle_download_request(int client_sock, const char *filepath) {
 
     // Close the server socket
     close(server_sock);
+    printf("File sent successfully to client.\n");
 }
 
 /**
@@ -455,8 +467,13 @@ void handle_download_request(int client_sock, const char *filepath) {
  * @param filepath The full client path (~S1/...)
  *
  * Directly deletes .c files on S1
- * Forwards delete commands to storage servers for other types
+ * For pdf/txt: Forwards delete request to appropriate storage server
  * Validates paths and handles errors
+ * 
+ * @details Implements protocol:
+ * 'R' - Remove File
+ *   1. S1 → Storage: 'R' + path_len + path  
+ *   2. Storage → S1: Success/Failure response
  */
 void handle_remove_request(int client_sock, const char *filepath) 
 {
@@ -482,8 +499,6 @@ void handle_remove_request(int client_sock, const char *filepath)
         char local_path[MAX_PATH_LEN];
         char *home_dir = NULL;
         const char *s1_part = strstr(filepath, "S1/");  // Pointer to S
-
-        //printf("s1_part - filepath: %d\n", s1_part - filepath );Greentable@2
 
             // Validate path format
         if (!s1_part || s1_part - filepath !=1 || strncmp(filepath, "~S1/", 4) != 0) 
@@ -556,11 +571,6 @@ void handle_remove_request(int client_sock, const char *filepath)
     printf("Server Connected.\n");
     printf("Filepath: %s\n",filepath);
 
-    // If connection is successful to target server
-    // Send status to client do to proceed
-    long status = 1;
-    send(client_sock, &status, sizeof(long), 0);
-
     // Send remove command to storage server
     char command_type = 'R'; // 'R' for remove
     if (send(server_sock, &command_type, 1, 0) != 1) {
@@ -569,6 +579,11 @@ void handle_remove_request(int client_sock, const char *filepath)
         send(client_sock, "EInternal server error", 22, 0);
         return;
     }
+
+    // If connection is successful to target server
+    // Send status to client to proceed
+    long status = 1;
+    send(client_sock, &status, sizeof(long), 0);
 
     // Send path length and path to target storage server
     int path_len = strlen(filepath);
@@ -618,6 +633,11 @@ void handle_remove_request(int client_sock, const char *filepath)
  * For pdf/txt: Forwards request to appropriate storage server
  * Streams the tar file directly to client
  * Cleans up temporary files after transfer
+ * 
+ * @details Implements protocol:
+ * 'T' - Tar Files
+ *   1. S1 → Storage: 'T' + filetype_len + filetype (.pdf/.txt)
+ *   2. Storage → S1: tar_size + tar_data
  */
 void handle_downloadtar_request(int client_sock, const char *filetype) {
     // Validate filetype
@@ -634,7 +654,38 @@ void handle_downloadtar_request(int client_sock, const char *filetype) {
     // If the received file type is "c"
     if (strcmp(filetype, "c") == 0) {
         // Handle .c files locally
-      
+  
+        // First check if S1 directory exists
+        struct stat st;
+        char s1_dir[256];
+        snprintf(s1_dir, sizeof(s1_dir), "%s/S1", getenv("HOME"));
+        if (stat(s1_dir, &st) == -1 || !S_ISDIR(st.st_mode)) {
+            long error = -1;
+            send(client_sock, &error, sizeof(long), 0);
+            char *err_msg = "ES1 directory not found";
+            int msg_len = strlen(err_msg);
+            send(client_sock, &msg_len, sizeof(int), 0);
+            send(client_sock, err_msg, msg_len, 0);
+            printf("ES1 directory not found\n");
+            return;
+        }
+
+        // Check if there are any .c files
+        char check_cmd[512];
+        snprintf(check_cmd, sizeof(check_cmd), 
+                "find %s -type f -name '*.c' | head -n 1 | grep -q .", s1_dir);
+        
+        if (system(check_cmd) != 0) {
+            long error = -1;
+            send(client_sock, &error, sizeof(long), 0);
+            char *err_msg = "ENo .c files found in S1 directory";
+            int msg_len = strlen(err_msg);
+            send(client_sock, &msg_len, sizeof(int), 0);
+            send(client_sock, err_msg, msg_len, 0);
+            printf("ENo .c files found in S1 directory\n");
+            return;
+        }
+            
         // Construct tar file name
         char tar_filename[256];     // cfiles.tar for c tar file
         snprintf(tar_filename, sizeof(tar_filename), "%sfiles.tar", filetype);
@@ -644,7 +695,13 @@ void handle_downloadtar_request(int client_sock, const char *filetype) {
         char dir_command[1024];
         snprintf(dir_command, sizeof(dir_command), "mkdir %s", temp_dir);
         if (system(dir_command)) {
-            send(client_sock, "ECould not create temp directory", 31, 0);
+            long error = -1;
+            send(client_sock, &error, sizeof(long), 0);
+            char *err_msg = "ECould not create temp directory";
+            int msg_len = strlen(err_msg);
+            send(client_sock, &msg_len, sizeof(int), 0);
+            send(client_sock, err_msg, msg_len, 0);
+            printf("ECould not create temp directory\n");
             return;
         }
 
@@ -664,7 +721,13 @@ void handle_downloadtar_request(int client_sock, const char *filetype) {
         printf("Tar command is: %s\n", cmd);
         int ret = system(cmd);
         if (ret != 0) {
-            send(client_sock, "ETar creation failed", 19, 0);
+            long error = -1;
+            send(client_sock, &error, sizeof(long), 0);
+            char *err_msg = "ETar creation failed";
+            int msg_len = strlen(err_msg);
+            send(client_sock, &msg_len, sizeof(int), 0);
+            send(client_sock, err_msg, msg_len, 0);
+            printf("ETar creation failed\n");
             // Cleanup temp files
             remove(list_path);
             remove(server_tar_path);
@@ -675,7 +738,13 @@ void handle_downloadtar_request(int client_sock, const char *filetype) {
         // Open tar file
         FILE *tar_file = fopen(server_tar_path, "rb");
         if (!tar_file) {
-            send(client_sock, "ETar creation failed", 19, 0);
+            long error = -1;
+            send(client_sock, &error, sizeof(long), 0);
+            char *err_msg = "ETar creation failed";
+            int msg_len = strlen(err_msg);
+            send(client_sock, &msg_len, sizeof(int), 0);
+            send(client_sock, err_msg, msg_len, 0);
+            printf("ETar creation failed\n");
             return;
         }
 
@@ -683,6 +752,10 @@ void handle_downloadtar_request(int client_sock, const char *filetype) {
         fseek(tar_file, 0, SEEK_END);
         long tar_size = ftell(tar_file); 
         fseek(tar_file, 0, SEEK_SET);   // Move pointer back to start of file
+
+        // Send status to client to proceed
+        long status = 1;
+        send(client_sock, &status, sizeof(long), 0);
 
         // Send tar file size to client
         send(client_sock, &tar_size, sizeof(long), 0);
@@ -730,6 +803,29 @@ void handle_downloadtar_request(int client_sock, const char *filetype) {
         send(server_sock, &type_len, sizeof(int), 0);
         send(server_sock, filetype, type_len, 0);
 
+        // Wait for status byte from target server
+        // If directory and file is present in target server, only then proceed
+        long status1;
+        recv(server_sock, &status1, sizeof(long), 0);
+        send(client_sock, &status1, sizeof(long), 0);
+        printf("status1: %d\n", status1);
+
+        if (status1 == -1) {
+            //printf("ES1 directory or .pdf files not found\n");
+            int msg_len;
+            recv(server_sock, &msg_len, sizeof(int), 0);
+            printf("msg_len: %d\n", msg_len);
+            char error_msg[BUFFER_SIZE];
+            recv(server_sock, error_msg, msg_len, 0);
+            error_msg[msg_len] = '\0';
+            printf("Error: %s\n", error_msg);
+            //send(client_sock, &status1, sizeof(long), 0);
+            send(client_sock, &msg_len, sizeof(int), 0);
+            send(client_sock, error_msg, msg_len, 0);
+            close(server_sock);
+            return;
+        }
+
         // Receive tar file size from target server
         long tar_size;
         recv(server_sock, &tar_size, sizeof(long), 0);
@@ -761,15 +857,35 @@ void handle_downloadtar_request(int client_sock, const char *filetype) {
 
         // Close the server socket
         close(server_sock);
+        printf("Tar file sent successfully to client\n");
     }
 }
 
+/**
+ * @brief Structure representing a file entry with name and extension
+ * 
+ * @var filename The name of the file (including extension)
+ * @var ext The file extension (e.g. ".c", ".txt")
+ * 
+ * @note Both strings are dynamically allocated and must be freed by the caller
+ */
 typedef struct
 {
-    char *filename;
-    char *ext;
+    char *filename; /**< Full filename string (allocated) */
+    char *ext;      /**< File extension string (allocated) */
 } FileEntry;
 
+/**
+ * @brief Comparator function for sorting FileEntry structures
+ * 
+ * @param a First FileEntry to compare
+ * @param b Second FileEntry to compare
+ * @return int Negative if a < b, positive if a > b, zero if equal
+ * 
+ * @details Sorts files first by extension order (.c → .pdf → .txt → .zip),
+ *          then alphabetically by filename within each extension group.
+ *          Designed for use with qsort().
+ */
 int compare_files(const void *a, const void *b)
 {
     const FileEntry *fa = (const FileEntry *)a;
@@ -794,6 +910,18 @@ int compare_files(const void *a, const void *b)
     return strcmp(fa->filename, fb->filename);
 }
 
+/**
+ * @brief Retrieves files with specific extension from a directory
+ * 
+ * @param path Directory path to search
+ * @param ext File extension to filter by (e.g. ".c")
+ * @param files Pointer to array of FileEntry structures (allocated/reallocated)
+ * @param count Pointer to count of found files (updated)
+ * 
+ * @details Scans specified directory for regular files matching given extension.
+ *          Allocates/reallocates FileEntry array and populates with filename/ext.
+ *          Caller must free allocated memory for both array and string fields.
+ */
 void get_files_from_dir(const char *path, const char *ext, FileEntry **files, int *count)
 {
     DIR *dir;
@@ -823,6 +951,25 @@ void get_files_from_dir(const char *path, const char *ext, FileEntry **files, in
     }
 }
 
+/**
+ * @brief Requests a list of files from a remote server based on directory and extension.
+ *
+ * This function establishes a TCP connection to a secondary server (e.g., S2, S3, S4),
+ * sends a request to list files in a specific directory (`pathname`), and retrieves 
+ * filenames matching a specific extension. The received filenames are stored in a dynamically 
+ * allocated array of `FileEntry` structures.
+ *
+ * @param ip        IP address of the server to connect to (e.g., "127.0.0.1").
+ * @param port      Port number of the target server (e.g., 9002, 9003, 9004).
+ * @param pathname  Directory path on the server to search for files (e.g., "~S2/folder1").
+ * @param ext       File extension used to tag returned entries (e.g., ".pdf", ".txt").
+ * @param files     Pointer to a dynamically allocated array of FileEntry structures (output).
+ * @param count     Pointer to an integer tracking the number of files found (incremented).
+ *
+ * @return 0 on success, -1 on failure (e.g., socket error, connection error, or no valid response).
+ *
+ * @note Memory allocated for filenames and extensions must be freed by the caller.
+ */
 int request_files_from_server(const char *ip, int port, const char *pathname, const char *ext, FileEntry **files, int *count) {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) return -1;
@@ -898,6 +1045,7 @@ char* str_replace(char *str, const char *old, const char *new) {
     return buffer;
 }
 
+
 /**
  * @brief Processes directory listing requests
  * @param client_sock Client socket descriptor
@@ -908,6 +1056,11 @@ char* str_replace(char *str, const char *old, const char *new) {
  * Sorts results alphabetically by filename
  * Returns only filenames with extensions
  * Handles permission errors and invalid paths
+ * 
+ * @details Implements protocol:
+ * 'L' - List Files
+ *   1. S1 → Storage: 'L' + path_len + path
+ *   2. Storage → S1: file_count + [filename1, filename2...]
  */
 void handle_pathname_request(int client_sock, const char *pathname) {
     // Validate input
@@ -983,7 +1136,6 @@ void handle_pathname_request(int client_sock, const char *pathname) {
     printf("Completed sending file list.\n");
 }
 
-
 /**
  * @brief Handles a client connection in a dedicated process
  * @param client_sock The client socket descriptor
@@ -1015,7 +1167,7 @@ void prcclient(int client_sock) {
 
         // If the command is equal to "uploadf"
         if (strcmp(command, "uploadf") == 0) {
-            printf("Command uploadf received.\n");
+            printf("\n======Command uploadf received======\n");
             // Get the second token (i.e; filename)
             char *filename = strtok(NULL, " ");
             // Get the third token (i.e; destination path)
@@ -1032,7 +1184,7 @@ void prcclient(int client_sock) {
         }
         // If the command is equal to "downlf"
         else if (strcmp(command, "downlf") == 0) {
-            printf("Command downlf received.\n");
+            printf("\n======Command downlf received======\n");
 
             // Get the second token (i.e; filepath)
             char *filepath = strtok(NULL, " ");
@@ -1048,7 +1200,7 @@ void prcclient(int client_sock) {
         }
         // If the command is equal to "removef"
         else if (strcmp(command, "removef") == 0) {
-            printf("Command removef received.\n");
+            printf("\n======Command removef received======\n");
 
             // Get the second token (i.e; filepath)
             char *filepath = strtok(NULL, " ");
@@ -1064,7 +1216,7 @@ void prcclient(int client_sock) {
         }
         // If the command is equal to "downltar"
         else if (strcmp(command, "downltar") == 0) {
-            printf("Command downltar received.\n");
+            printf("\n======Command downltar received======\n");
 
             // Get the second token (i.e; filetype)
             // Supported file types: .c, .pdf, .txt 
@@ -1081,7 +1233,7 @@ void prcclient(int client_sock) {
         }
         // If the command is equal to "dispfnames"
         else if (strcmp(command, "dispfnames") == 0) {
-            printf("Command dispfnames received.\n");
+            printf("\n======Command dispfnames received======\n");
             // Get the second token (i.e; pathname)
             char *pathname = strtok(NULL, " ");
             if (!pathname) 
@@ -1104,6 +1256,16 @@ void prcclient(int client_sock) {
     close(client_sock);
 }
 
+/*
+ * Signal handler for SIGCHLD
+ *
+ * @brief function is triggered automatically whenever a child process terminates.
+ * It uses a non-blocking loop (`WNOHANG`) with `waitpid()` to reap all exited
+ * child processes and prevent zombie processes from accumulating.
+ *
+ * This ensures that the server remains clean and does not leave defunct
+ * (zombie) child processes in the process table.
+ * */
 void handle_sigchld(int sig) {
     while (waitpid(-1, NULL, WNOHANG) > 0);
 }
@@ -1119,15 +1281,32 @@ void handle_sigchld(int sig) {
  *    - Forwarding to S2 (PDF), S3 (TXT), S4 (ZIP) servers
  * 4. Maintains system resources and cleans up on termination
  *
- * Usage: ./s1
  *
  * @return int Returns EXIT_SUCCESS (0) on normal shutdown, 
  *             EXIT_FAILURE (1) on critical errors
- *
- * @error_handling Critical errors will:
- * 1. Log to stderr
- * 2. Release allocated resources
- * 3. Exit with failure code
+ * 
+ * Server-to-Server Command Protocol (S1 ↔ S2/S3/S4):
+ * Single-character commands followed by path/data:
+ * 
+ * 'U' - Upload File
+ *   1. S1 → Storage: 'U' + path_len + path + file_size + file_data
+ *   2. Storage → S1: Success/Failure response
+ * 
+ * 'D' - Download File  
+ *   1. S1 → Storage: 'D' + path_len + path
+ *   2. Storage → S1: file_size + file_data OR error
+ * 
+ * 'R' - Remove File
+ *   1. S1 → Storage: 'R' + path_len + path  
+ *   2. Storage → S1: Success/Failure response
+ * 
+ * 'T' - Tar Files
+ *   1. S1 → Storage: 'T' + filetype_len + filetype (.pdf/.txt)
+ *   2. Storage → S1: tar_size + tar_data
+ * 
+ * 'L' - List Files
+ *   1. S1 → Storage: 'L' + path_len + path
+ *   2. Storage → S1: file_count + [filename1, filename2...]
  */
 int main() {
 

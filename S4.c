@@ -1,23 +1,41 @@
 /*
- * Distributed File System - ZIP Storage Server (S4)
+* S4.c - Secondary Server for ZIP File Storage
  *
- * Responsibilities:
- * 1. Stores all PDF files in ~/S2/ directory
- * 2. Services file requests from S1:
+ * Description:
+ * ------------
+ * This server receives .zip files from the main server (S1) and stores them
+ * under the local ~/S4 directory structure. It handles:
+ *   - Receiving and saving uploaded ZIP files
+ *   - Responding to S1 for download requests
+ *   - Sending ZIP file list to S1 for listing operation
+ *
+ * Key Behaviors:
+ * --------------
+ * - Listens for connections from S1 only.
+ * - Stores files in a local path mirroring the one sent by the client via S1.
+ * - Supports upload, download, remove, list and tar archive generation operations.
+ * - Maintains identical directory structure as S1
+ * - Services file requests from S1:
  *    - Upload (U)
  *    - Download (D)
- *    - Delete (R)
- *    - Download tar (T)
  *    - Directory listing (L)
  *
- * Protocol:
- * - Listens on TCP port 8087
- * - Expects paths in ~S1/ format, converts to ~/S4/
- * - Maintains identical directory structure as S1
+ * Usage:
+ * ------
+ * Compile: gcc S4.c -o S4
+ * Run:     ./S4
+ *
+ * Port: Default is 6074 (can be changed via macro)
  *
  * Security:
+ * ---------
  * - Validates all paths to prevent traversal attacks
  * - Rejects non-ZIP file operations
+ * 
+ * Authors: Saima Khatoon and Lokesh Jayachandran
+ * Date: 09-04-2025
+ * Course: COMP-8567
+ * Institution: University of Windsor
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,23 +50,10 @@
 #include <libgen.h>
 #include <asm-generic/socket.h>
 
-#define PORT_S4 6057
+
+#define PORT_S4 6074
 #define BUFFER_SIZE 1024
 #define MAX_PATH_LEN 1024
-
-/**
- * @brief Creates directory structure recursively
- * @param path The full directory path to create
- *
- * Handles all intermediate directory creation
- * Uses mkdir -p system command
- * Validates path format
- */
-void create_directory(const char *path) {
-    char command[1024];
-    snprintf(command, sizeof(command), "mkdir -p %s", path);
-    system(command);
-}
 
 /**
  * @brief Handles file uploads from main server
@@ -58,10 +63,10 @@ void create_directory(const char *path) {
  * Creates parent directories as needed
  * Implements overwrite protection
  * Validates file extension matches server type
- * Uses atomic move for completed transfers
  */
 void handle_upload(int sock) {
-    printf("Request receive from server S1 to upload a zip file.\n");
+    // Request receive from server S1
+    printf("======Processing upload of ZIP file======\n");
 
     int path_len;
     read(sock, &path_len, sizeof(int));
@@ -82,7 +87,7 @@ void handle_upload(int sock) {
     long received = 0;
     while (received < filesize) {
         int chunk = read(sock, filedata + received, filesize - received);
-        printf("File content sent to S1 : %s\n", filedata);
+        //printf("File content sent to S1 : %s\n", filedata);
         if (chunk <= 0) break;
         received += chunk;
     }
@@ -92,11 +97,11 @@ void handle_upload(int sock) {
     snprintf(fullpath, sizeof(fullpath), "%s/S4%s", getenv("HOME"), rel_path);
     printf("Full path is: %s\n", fullpath);
 
-    // Create directory tree ~/S2/..
+    // Create directory tree ~/S4/..
     char mkdir_cmd[1024];
     snprintf(mkdir_cmd, sizeof(mkdir_cmd), "mkdir -p %s", dirname(strdup(fullpath)));
     system(mkdir_cmd);
-    printf("mkdir_cmd is: %s\n", mkdir_cmd);
+    printf("Command to create directory is: %s\n", mkdir_cmd);
 
     // Create file and write data into it
     FILE *fp = fopen(fullpath, "wb");
@@ -107,7 +112,7 @@ void handle_upload(int sock) {
         perror("S4 write failed");
     }
 
-    printf("File uploaded successfully\n");
+    printf("File uploaded successfully.\n\n");
 
     free(filedata);
 }
@@ -122,7 +127,8 @@ void handle_upload(int sock) {
  * Implements proper error reporting
  */
 void handle_download(int sock) {
-    printf("Request receive from server S1 to download a zip file.\n");
+    // Request receive from server S1
+    printf("======Processing download of ZIP file======\n");
 
     // Receive path length from S1
     int path_len;
@@ -142,12 +148,12 @@ void handle_download(int sock) {
     printf("File path receive from S1: %s\n", filepath);
 
     // Build absolute path with buffer safety
-    // Converts ~S1/.. to /home/user/S3/..
+    // Converts ~S1/.. to /home/user/4/..
     char local_path[MAX_PATH_LEN];
     snprintf(local_path, sizeof(local_path), "%s/%s/%s", getenv("HOME"), "S4", strstr(filepath, "S1/") + 3);
     printf("Absolute path of file in S4:%s\n",local_path);
 
-    // Open file in S3
+    // Open file in S4
     FILE *file = fopen(local_path, "rb");
     char status = (file != NULL) ? 1 : -1;
     send(sock, &status, 1, 0);  // First send status byte
@@ -178,7 +184,7 @@ void handle_download(int sock) {
         file_size -= bytes_read;
     }
     fclose(file);       // Close the file
-    printf("File sent successfully to S1: %s\n", file);
+    printf("File sent successfully to S1.\n\n");
 }
 
 /**
@@ -192,7 +198,8 @@ void handle_download(int sock) {
  * Handles permission errors gracefully
  */
 void handle_listing(int sock) {
-    printf("Request received from server S1 to list .zip files.\n");
+    // Request receive from server S1
+    printf("======Processing listing of zip files======\n");
 
     // Step 1: Receive path length and path
     int path_len = 0;
@@ -268,7 +275,7 @@ void handle_listing(int sock) {
     send(sock, &status, sizeof(long), 0);
 
     if (status == 0) {
-        printf("No .zip files found.\n");
+        printf("No .zip files found.\n\n");
         return;
     }
 
@@ -282,10 +289,29 @@ void handle_listing(int sock) {
     }
 
     free(files);
-    printf("Completed sending list to S1.\n");
+    printf("Completed sending list to S1.\n\n");
 }
 
 
+/**
+ * @brief Main entry point for S4 server in W25 Distributed Filesystem
+ * 
+ * @return int Returns 0 on normal shutdown, EXIT_FAILURE on critical errors
+ * 
+ * @details Creates a TCP server on PORT_S4 that handles multiple file operations:
+ *          - 'U' Upload files to server storage
+ *          - 'D' Download files from server
+ *          - 'L' List available files
+ * 
+ * @note The server runs indefinitely until manually terminated
+ * @warning Uses SO_REUSEADDR|SO_REUSEPORT to allow quick socket recycling
+ * 
+ * Server Workflow:
+ * 1. Creates listening socket on PORT_S4
+ * 2. Accepts incoming client connections
+ * 3. Processes commands based on received command type
+ * 4. Closes client connection after handling
+ */
 int main() {
     int server_fd, new_socket;
     struct sockaddr_in address;

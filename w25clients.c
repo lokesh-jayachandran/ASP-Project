@@ -1,55 +1,65 @@
 /*
- * DFS Client Application
+ * w25clients.c - Client Interface for Distributed File System
  *
- * Features:
- * - Upload files to distributed storage
- * - Download files from server
- * - Delete file on server
- * - Downloads .tar archive of all files of given type
- * - Lists all files in directory
+ * Description:
+ * ------------
+ * This client connects to the main server (S1) and allows users to interact with
+ * the distributed file system using custom commands:
+ *   - uploadf: Upload files to distributed storage
+ *   - downlf: Download files from server
+ *   - removef: Delete file on server
+ *   - downltar: Downloads .tar archive of all files of given type
+ *   - dispfnames: Lists all files in directory
+ *
+ * Key Behaviors:
+ * --------------
+ * - Sends user commands to S1.
+ * - Receives responses and file data from S1.
+ * - Validates filename formats (e.g. no paths for uploadf).
+ * - Displays appropriate messages for success/error scenarios.
  *
  * Usage:
- * All paths must use ~S1/ prefix regardless of actual storage location
- * Example commands:
- *   uploadf local.txt ~S1/docs/notes.txt
- *   downlf ~S1/reports/annual.pdf
- *
- * Supported Client Commands:
+ * ------
+ * Compile: gcc w25clients.c -o w25clients
+ * Run:     ./w25clients 
  * 
- * 1. uploadf <local_path> <server_path>
- *    - Uploads file to server
+ * Port: Always connects to S1 on localhost:6071 (can be changed via macro)
+ * 
+ * Supported Client Commands:
+ * --------------------------
+ * 
+ * 1. uploadf <filename> <destination_path>
  *    - Example: uploadf report.pdf ~S1/docs/
  *    - Supported extensions: .c, .pdf, .txt, .zip
  * 
- * 2. downlf <server_path>
- *    - Downloads file from server
+ * 2. downlf <filepath>
  *    - Example: downlf ~S1/project/source.c
  * 
- * 3. removef <server_path>
- *    - Deletes file on server
+ * 3. removef <filepath>
  *    - Example: removef ~S1/old/notes.txt
  * 
  * 4. downltar <filetype>
- *    - Downloads .tar archive of all files of given type
- *    - Example: downltar pdf → downloads pdf.tar
+ *    - Example: downltar .pdf → downloads pdffiles.tar
  *    - Supported types: .c, .pdf, .txt (excludes .zip)
+ *    - Filename: cfiles.tar for c, pdf.tar for pdf, txt.tar for txt
  * 
- * 5. dispfnames <directory_path>
- *    - Lists all files in directory
+ * 5. dispfnames <directory>
  *    - Example: dispfnames ~S1/project/
  *    - Output format: alphabetized by extension (.c → .pdf → .txt → .zip)
  * 
  * 6. exit
  *    - Terminates client session
  * 
- * Connection:
- * - Always connects to S1 on localhost:8088
- * - Maintains persistent connection until 'exit'
- * 
  * Path Specifications:
- * - All paths must begin with ~S1/
+ * --------------------
+ * - All paths must use ~S1/ prefix regardless of actual storage location
  * - Example valid path: ~S1/folder/sub/file.txt
  * - Example invalid path: /absolute/path/file.txt
+ * 
+ * Authors: Saima Khatoon and Lokesh Jayachandran
+ * Date: 09-04-2025
+ * Course: COMP-8567
+ * Institution: University of Windsor
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -60,8 +70,10 @@
 #include <arpa/inet.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <asm-generic/socket.h>
 
-#define PORT_S1 6054
+
+#define PORT_S1 6071
 #define BUFFER_SIZE 1024
 
 /**
@@ -75,12 +87,6 @@
  * Handles server responses and errors
  */
 void upload_file(int sock, const char *filename, const char *dest_path) {
-
-    // Send command to server S1
-    char command[BUFFER_SIZE];
-    snprintf(command, BUFFER_SIZE, "uploadf %s %s", filename, dest_path);
-    send(sock, command, strlen(command), 0);
-    printf("Command send to S1: %s\n", command);
 
     // Open the file
     FILE *fp = fopen(filename, "rb");
@@ -111,7 +117,7 @@ void upload_file(int sock, const char *filename, const char *dest_path) {
     long total_sent = 0;
     while (total_sent < filesize) {
         int chunk = write(sock, filedata + total_sent, filesize - total_sent);
-        printf("File content sent to server : %s\n", filedata);
+        //printf("File content sent to server : %s\n", filedata);
         if (chunk <= 0) break;
         total_sent += chunk;
     }
@@ -135,22 +141,13 @@ void upload_file(int sock, const char *filename, const char *dest_path) {
  * Preserves original filename
  */
 void download_file(int sock, const char *filepath) {
-    // Send command to server S1
-    char command[BUFFER_SIZE];
-    snprintf(command, BUFFER_SIZE, "downlf %s", filepath);
-    send(sock, command, strlen(command), 0);
 
-    printf("Command send to S1: %s\n", command);
-
-    // If server S1 is not connected to target server
+    // Proceed to receive the response from server only if:
+    // - Target server is connected properly to storage server
+    // Otherwise, the server responds with a status value of -1 to indicate an error.
     long status;
     int r = recv(sock, &status, sizeof(long), 0);
-    if (r <= 0) {
-        printf("Connection closed or failed.\n");
-        return;
-    }
-    printf("Status received from S1: %d\n", status);
-
+    //printf("Status received from S1: %d\n", status);
     if (status == -1) {
         // Error flow
         int msg_len;
@@ -158,7 +155,8 @@ void download_file(int sock, const char *filepath) {
         char error_msg[BUFFER_SIZE];
         recv(sock, error_msg, msg_len, 0);
         error_msg[msg_len] = '\0';
-        printf("Error: %s\n", error_msg);
+        // Ignore the leading 'E' in the error message before printing.
+        printf("%s\n", error_msg+1);
         return;
     }
 
@@ -169,7 +167,7 @@ void download_file(int sock, const char *filepath) {
         printf("Connection error\n");
         return;
     }
-    printf("File size received from S1: %d\n", file_size);
+    //printf("File size received from S1: %d\n", file_size);
     if (file_size == -1) {
         // Error case
         int msg_len;
@@ -177,11 +175,11 @@ void download_file(int sock, const char *filepath) {
         char error_msg[BUFFER_SIZE];
         recv(sock, error_msg, msg_len, 0);
         error_msg[msg_len] = '\0';
-        printf("Error: %s\n", error_msg);
+        // Ignore the leading 'E' in the error message before printing.
+        printf("Server response: %s\n", error_msg+1);
         return;
     }
     
-
     // Extract filename from path
     const char *filename = strrchr(filepath, '/');
     if (!filename) filename = filepath;
@@ -193,7 +191,7 @@ void download_file(int sock, const char *filepath) {
         perror("Failed to create file");
         return;
     }
-    printf("Filename sent to S1: %s\n", filename);
+    //printf("Filename sent to S1: %s\n", filename);
 
     char buffer[BUFFER_SIZE];
     buffer[0] = '\0';   // Clear all previous values
@@ -201,7 +199,7 @@ void download_file(int sock, const char *filepath) {
     while (bytes_remaining > 0) {
         int bytes_to_read = bytes_remaining < BUFFER_SIZE ? bytes_remaining : BUFFER_SIZE;
         int bytes_received = recv(sock, buffer, bytes_to_read, 0);
-        printf("File content received from S1: %s\n", buffer);
+        //printf("File content received from S1: %s\n", buffer);
         if (bytes_received <= 0) break;
         fwrite(buffer, 1, bytes_received, file);
         bytes_remaining -= bytes_received;
@@ -222,23 +220,17 @@ void download_file(int sock, const char *filepath) {
  * Supports deletion of all file types
  */
 void remove_file(int sock, const char *filepath) {
-    // Send command to server S1
-    char command[BUFFER_SIZE];
-    snprintf(command, BUFFER_SIZE, "removef %s", filepath);
-    printf("Bytes send: %s\n", command);
-    send(sock, command, strlen(command), 0);
 
-    //usleep(100000);
-
-    // If server S1 is not connected to target server
+    // Proceed to receive the response from server only if:
+    // - Target server is connected properly to storage server
+    // Otherwise, the server responds with a status value of -1 to indicate an error.
     long status;
     int r = recv(sock, &status, sizeof(long), 0);
     if (r <= 0) {
-        printf("Connection closed or failed.\n");
+        printf("Invalid status received.\n");
         return;
     }
-    printf("Status received from S1: %d\n", status);
-
+    //printf("Status received from S1: %d\n", status);
     if (status == -1) {
         // Error flow
         int msg_len;
@@ -246,26 +238,26 @@ void remove_file(int sock, const char *filepath) {
         char error_msg[BUFFER_SIZE];
         recv(sock, error_msg, msg_len, 0);
         error_msg[msg_len] = '\0';
-        printf("Error: %s\n", error_msg);
+        // Ignore the leading 'E' in the error message before printing.
+        printf("%s\n", error_msg+1);
         return;
     }
     
     // Receive response
     char response[BUFFER_SIZE] = " ";
     int bytes_received = recv(sock, response, BUFFER_SIZE, 0);
-    printf("Bytes received: %s\n", response);
-
+    //printf("Bytes received: %s\n", response);
     if (bytes_received <= 0) {
-        printf("Error: Connection lost\n");
+        printf("Connection lost\n");
         return;
     }
     response[bytes_received] = '\0';
 
     // Parse response
     if (response[0] == 'E') {
-        printf("Error: %s\n", response + 1);
+        printf("Server response: %s\n", response + 1);
     } else {
-        printf("%s\n", response + 1);
+        printf("Server response: %s\n", response + 1);
     }
 }
 
@@ -277,16 +269,36 @@ void remove_file(int sock, const char *filepath) {
  * Sends downltar command to server
  * Receives and saves the tar archive
  * Shows progress and handles errors
- * Outputs: <type>files.tar (e.g., pdffiles.tar)
+ * Outputs: <type>files.tar
+ * Example: cfiles.tar for c, pdf.tar for pdf, txt.tar for txt
  */
 void downloadtar_file(int sock, const char *filetype) {
-    // Send command
-    char command[BUFFER_SIZE];
-    snprintf(command, BUFFER_SIZE, "downltar %s", filetype);
-    send(sock, command, strlen(command), 0);
-    printf("Command send to S1: %s\n", command);
 
-    // Receive response
+    // Proceed to receive the tar file size only if:
+    // - The target directory exists on the server, and
+    // - It contains at least one .c file.
+    // - Target server is connected properly to storage server
+    // Otherwise, the server responds with a status value of -1 to indicate an error.
+    long status;
+    int r = recv(sock, &status, sizeof(long), 0);
+    if (r <= 0) {
+        printf("Invalid status received.\n");
+        return;
+    }
+    //printf("Status received from S1: %d\n", status);
+    if (status == -1) {
+        // Error flow
+        int msg_len;
+        recv(sock, &msg_len, sizeof(int), 0);
+        char error_msg[BUFFER_SIZE];
+        recv(sock, error_msg, msg_len, 0);
+        error_msg[msg_len] = '\0';
+        // Ignore the leading 'E' in the error message before printing.
+        printf("%s\n", error_msg+1);
+        return;
+    }
+
+    // Receive response from server
     long tar_size;
     int bytes_received = recv(sock, &tar_size, sizeof(long), 0);
     
@@ -294,7 +306,7 @@ void downloadtar_file(int sock, const char *filetype) {
         printf("Connection error\n");
         return;
     }
-    printf("Tar file size received from S1: %d\n", tar_size);
+    //printf("Tar file size received from S1: %d\n", tar_size);
 
     if (tar_size < 0) {
         // Error case
@@ -303,21 +315,27 @@ void downloadtar_file(int sock, const char *filetype) {
         char error_msg[BUFFER_SIZE];
         recv(sock, error_msg, msg_len, 0);
         error_msg[msg_len] = '\0';
-        printf("Error: %s\n", error_msg);
+        // Ignore the leading 'E' in the error message before printing.
+        printf("Server response: %s\n", error_msg+1);   
         return;
     }
 
     // Find last dot in filename
     const char *ext = strrchr(filetype, '.');
     ext++;      // Contain file type only without dot
-    printf("File extension is: %s\n",ext);
+    //printf("File extension is: %s\n",ext);
 
     // Create output filename
     char filename[50];
     // cfiles.tar for c file name
-    // txtfiles.tar for txt file name
-    // pdffiles.tar for pdf file name
-    snprintf(filename, sizeof(filename), "%sfiles.tar", ext);   
+    // txt.tar for txt file name
+    // pdf.tar for pdf file name
+    if (strcmp(ext, "c") == 0){
+        snprintf(filename, sizeof(filename), "%sfiles.tar", ext);  
+    }
+    else {
+        snprintf(filename, sizeof(filename), "%s.tar", ext);  
+    }
 
     // Save tar file
     FILE *tar_file = fopen(filename, "wb");
@@ -325,21 +343,21 @@ void downloadtar_file(int sock, const char *filetype) {
         perror("Failed to create tar file");
         return;
     }
-    printf("Tar file created with name: %s\n", filename);
+    //printf("Tar file created with name: %s\n", filename);
 
     char buffer[BUFFER_SIZE];
     long bytes_remaining = tar_size;
     while (bytes_remaining > 0) {
         int chunk = bytes_remaining > BUFFER_SIZE ? BUFFER_SIZE : bytes_remaining;
         bytes_received = recv(sock, buffer, chunk, 0);
-        printf("Bytes received from S1: %s\n", buffer);
+        //printf("Bytes received from S1: %s\n", buffer);
         if (bytes_received <= 0) break;
         fwrite(buffer, 1, bytes_received, tar_file);
         bytes_remaining -= bytes_received;
     }
 
     fclose(tar_file);
-    printf("Downloaded %s (%ld bytes)\n", filename, tar_size);
+    printf("File %s downloaded successfully.\n", filename);
 }
 
 /**
@@ -351,12 +369,13 @@ void downloadtar_file(int sock, const char *filetype) {
  * Handles network errors gracefully
  */
 void list_file(int sock, const char *filepath){
-     // Prepare and send the command to S1
+
+    // Prepare and send the command to S1
     char command[BUFFER_SIZE];
     snprintf(command, BUFFER_SIZE, "dispfnames %s", filepath);
     send(sock, command, strlen(command), 0);
 
-    printf("Command sent to S1: %s\n", command);
+    //printf("Command sent to S1: %s\n", command);
 
     // Receive status
     long status;
@@ -399,6 +418,22 @@ void list_file(int sock, const char *filepath){
     printf("File list retrieval complete.\n");
 }
 
+/**
+ * @brief Main entry point for W25 Distributed Filesystem Client
+ * 
+ * @return int Returns 0 on normal exit, -1 on socket/connection errors
+ * 
+ * @details Establishes connection to S1 server (localhost:PORT_S1) and provides
+ *          an interactive command-line interface for file operations including:
+ *          - uploadf: Upload files to server (supports .c, .pdf, .txt, .zip)
+ *          - downlf: Download files from server
+ *          - removef: Delete files from server
+ *          - downltar: Download tar bundles by file type
+ *          - exit: Terminate the client session
+ * 
+ * @note The client maintains persistent connection until 'exit' command
+ * @warning All file operations are restricted to ~S1/ paths
+ */
 int main() {
     int sock = 0;
     struct sockaddr_in serv_addr;
@@ -426,7 +461,7 @@ int main() {
 
     printf("Connected to S1 server\n");
     printf("====================================\n");
-    printf("     W25 Client - Distributed FS     \n");
+    printf("🖥️    W25 Client - Distributed FS     \n");
     printf("     Connected to: %d\n", PORT_S1);
     printf("====================================\n\n");
 
@@ -445,22 +480,24 @@ int main() {
         char *command = strtok(input, " ");
         if (!command) continue;
 
+        //************************************/
+        //*************Upload file************/
+        //************************************/
         if (strcmp(command, "uploadf") == 0) {
             // Get the second token (i.e; filename)
             char *filename = strtok(NULL, " ");
             // Get the third token (i.e; destination path)
             char *dest_path = strtok(NULL, " ");
             if (!filename || !dest_path) {
-                printf("Invalid command syntax. Usage: uploadf filename ~S1/path/to/file\n");
+                printf("Invalid command syntax. Usage: uploadf filename ~S1/..\n");
                 continue;
             }
 
-            //char filename[256], dest[512];
-
-            /*if (sscanf(command, "uploadf %s %s", filename, dest) != 2) {
-                printf("Invalid syntax. Usage: uploadf <filename> <destination>\n");
+            // Check if filename contains any '/' — disallow paths
+            if (strchr(filename, '/')) {
+                printf("Invalid command syntax. Usage: uploadf filename ~S1/..\n");
                 continue;
-            }*/
+            }
 
             // Check file type
             char *ext = strrchr(filename, '.');
@@ -482,14 +519,32 @@ int main() {
                 continue;
             }
 
+            // Send command to server S1
+            char command[BUFFER_SIZE];
+            snprintf(command, BUFFER_SIZE, "uploadf %s %s", filename, dest_path);
+            send(sock, command, strlen(command), 0);
+            //printf("Command send to S1: %s\n", command);
+
+            // Client server communication to upload file from PWD to server
             upload_file(sock, filename, dest_path);
-        } else if (strcmp(command, "downlf") == 0) {
+        } 
+        //************************************/
+        //************Download file***********/
+        //************************************/
+        else if (strcmp(command, "downlf") == 0) {
             // Get the second token (i.e; filepath)
             char *filepath = strtok(NULL, " ");
             if (!filepath) {
                 printf("Invalid command syntax. Usage: downlf ~S1/path/to/file\n");
                 continue;
             }
+
+            // Check filepath prefix
+            if (strncmp(filepath, "~S1", 3) != 0) {
+                printf("Filepath must start with ~S1. Usage: downlf ~S1/path/to/file\n");
+                continue;
+            }
+
             // Get last '/'
             const char *filename = strrchr(filepath, '/');
             if (!filename){
@@ -507,12 +562,29 @@ int main() {
                 continue;
             }
 
+             // Send command to server S1
+            char command[BUFFER_SIZE];
+            snprintf(command, BUFFER_SIZE, "downlf %s", filepath);
+            send(sock, command, strlen(command), 0);
+            //printf("Command send to S1: %s\n", command);
+
+            // Client server communication to download file from server
             download_file(sock, filepath);
-        } else if (strcmp(command, "removef") == 0) {
+        }
+        //************************************/
+        //*************Remove file************/
+        //************************************/
+        else if (strcmp(command, "removef") == 0) {
             // Get the second token (i.e; filepath)
             char *filepath = strtok(NULL, " ");
             if (!filepath) {
                 printf("Invalid command syntax. Usage: removef ~S1/path/to/file\n");
+                continue;
+            }
+
+            // Check filepath prefix
+            if (strncmp(filepath, "~S1", 3) != 0) {
+                printf("Filepath must start with ~S1. Usage: removef ~S1/path/to/file\n");
                 continue;
             }
 
@@ -533,8 +605,19 @@ int main() {
                 continue;
             }
 
+            // Send entire command to server S1
+            char command[BUFFER_SIZE];
+            snprintf(command, BUFFER_SIZE, "removef %s", filepath);
+            //printf("Command sent to S1: %s\n", command);
+            send(sock, command, strlen(command), 0);
+
+            // Client server communication to remove a file from server
             remove_file(sock, filepath);
-        } else if (strcmp(command, "downltar") == 0) {
+        } 
+        //************************************/
+        //**********Downlaod tar file*********/
+        //************************************/
+        else if (strcmp(command, "downltar") == 0) {
             // Get the second token (i.e; filetype)
             // Supported file types: .c, .pdf, .txt 
             char *filetype = strtok(NULL, " ");
@@ -549,18 +632,44 @@ int main() {
                 printf("Unsupported file type. Allowed: .c, .pdf, .txt\n");
                 continue;
             }
+
+            // Send entire command to server S1
+            char command[BUFFER_SIZE];
+            snprintf(command, BUFFER_SIZE, "downltar %s", filetype);
+            send(sock, command, strlen(command), 0);
+            //printf("Command send to S1: %s\n", command);
+
+            // Client server communication to download all files in tar format from server
             downloadtar_file(sock, filetype);
-        } else if (strcmp(command, "dispfnames") == 0) {
+        }
+        //************************************/
+        //**************List file*************/
+        //************************************/
+        else if (strcmp(command, "dispfnames") == 0) {
             // Get the second token (i.e; pathname)
             char *filepath = strtok(NULL, " ");
             if (!filepath) {
                 printf("Invalid command syntax. Usage: dispfnames ~S1/..\n");
                 continue;
             }
+
+            // Check filepath prefix
+            if (strncmp(filepath, "~S1", 3) != 0) {
+                printf("Filepath must start with ~S1. dispfnames ~S1/..\n");
+                continue;
+            }
+
+            // Prepare and send the command to S1
+            char command[BUFFER_SIZE];
+            snprintf(command, BUFFER_SIZE, "dispfnames %s", filepath);
+            send(sock, command, strlen(command), 0);
+            //printf("Command sent to S1: %s\n", command);
+
+            // Client server communication to list all files from server
             list_file(sock, filepath);
         } else {
-            printf("Unknown command\n");
-            printf("Supported commands are uploadf, downlf, removef, downltar, dispfnames\n");
+            printf("Invalid command.\n");
+            printf("Supported: uploadf, downlf, removef, downltar, dispfnames\n");
         }
     }
 
